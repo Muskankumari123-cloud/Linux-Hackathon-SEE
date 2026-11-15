@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tuxnova monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0e1a2b;--panel:#16263b;--line:#243a56;--text:#e8eef6;--mute:#8aa0ba;--ok:#5ad1c0;--warn:#f2b84b;--bad:#ff6b6b;
+--sans:"Bricolage Grotesque",system-ui,sans-serif;--mono:ui-monospace,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);padding:20px;max-width:1100px;margin-inline:auto}
+header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:20px}
+h1{margin:0;font-size:1.6rem;font-weight:800}
+.meta{color:var(--mute);font-size:.95rem}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--bad);margin-right:6px}
+.dot.live{background:var(--ok)}
+.grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,4fr);gap:16px}
+@media(max-width:760px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+h2{margin:0 0 12px;font-size:1rem;font-weight:600;color:var(--mute)}
+.hero{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+.ring{position:relative;width:170px;height:170px;flex:none}
+.ring svg{transform:rotate(-90deg)}
+.ring circle{fill:none;stroke-width:14;stroke-linecap:round}
+.ring .track{stroke:var(--line)}
+.ring .val{stroke:var(--ok);transition:stroke-dashoffset .6s,stroke .3s}
+.ring .num{position:absolute;inset:0;display:grid;place-content:center;text-align:center;font-size:2.6rem;font-weight:800}
+.ring .num small{font-size:.85rem;font-weight:400;color:var(--mute)}
+canvas{width:100%;height:120px;flex:1;min-width:200px}
+.bar{margin-bottom:14px}
+.bar .row{display:flex;justify-content:space-between;margin-bottom:5px}
+.track{height:10px;background:var(--line);border-radius:6px;overflow:hidden}
+.fill{height:100%;width:0;background:var(--ok);transition:width .6s,background .3s}
+.pills{display:flex;gap:8px;flex-wrap:wrap}
+.pill{padding:5px 12px;border-radius:20px;font-size:.9rem;border:1px solid var(--ok);color:var(--ok)}
+.pill.down{border-color:var(--bad);color:var(--bad)}
+.logs{grid-column:1/-1}
+#logs{font-family:var(--mono);font-size:.82rem;max-height:240px;overflow:auto;line-height:1.6}
+#logs div{white-space:pre-wrap;word-break:break-word}
+.WARN{color:var(--warn)}.ERROR{color:var(--bad)}.INFO{color:var(--mute)}
+#err{display:none;background:#3a1f26;border:1px solid var(--bad);color:#ffc9c9;padding:10px 14px;border-radius:10px;margin-bottom:16px}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="host">tuxnova</h1>
+  <div class="meta"><span id="dot" class="dot"></span><span id="status">connecting…</span> · up <span id="uptime">–</span></div>
+</header>
+<div id="err"></div>
+<div class="grid">
+  <section class="panel">
+    <h2>CPU and memory, last 60 readings</h2>
+    <div class="hero">
+      <div class="ring">
+        <svg width="170" height="170" viewBox="0 0 170 170"><circle class="track" cx="85" cy="85" r="75"/><circle id="ring" class="val" cx="85" cy="85" r="75" stroke-dasharray="471" stroke-dashoffset="471"/></svg>
+        <div class="num"><div><span id="cpu">0</span>%<br><small>CPU</small></div></div>
+      </div>
+      <canvas id="spark" width="500" height="120"></canvas>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Resources</h2>
+    <div class="bar"><div class="row"><span>Memory</span><span id="memT">0%</span></div><div class="track"><div id="memB" class="fill"></div></div></div>
+    <div class="bar"><div class="row"><span>Disk</span><span id="diskT">0%</span></div><div class="track"><div id="diskB" class="fill"></div></div></div>
+    <h2 style="margin-top:20px">Services</h2>
+    <div id="services" class="pills"></div>
+  </section>
+  <section class="panel logs">
+    <h2>Logs</h2>
+    <div id="logs"></div>
+  </section>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const hist = {cpu: [], mem: []};
+const color = v => v >= 90 ? "var(--bad)" : v >= 75 ? "var(--warn)" : "var(--ok)";
+const esc = s => String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+function setBar(id, txt, v){
+  $(txt).textContent = v.toFixed(1) + "%";
+  $(id).style.width = Math.min(v,100) + "%";
+  $(id).style.background = color(v);
+}
+
+function drawSpark(){
+  const c = $("spark"), g = c.getContext("2d");
+  g.clearRect(0,0,c.width,c.height);
+  g.strokeStyle = "#243a56"; g.lineWidth = 1;
+  [25,50,75].forEach(p => { const y = c.height - p/100*c.height; g.beginPath(); g.moveTo(0,y); g.lineTo(c.width,y); g.stroke(); });
+  [["mem","#f2b84b"],["cpu","#5ad1c0"]].forEach(([k,col]) => {
+    const d = hist[k]; if (d.length < 2) return;
+    g.strokeStyle = col; g.lineWidth = 3; g.lineJoin = "round"; g.beginPath();
+    d.forEach((v,i) => { const x = i/59*c.width, y = c.height - Math.min(v,100)/100*c.height; i ? g.lineTo(x,y) : g.moveTo(x,y); });
+    g.stroke();
+  });
+}
+
+function render(m){
+  $("host").textContent = m.host || "server";
+  $("uptime").textContent = m.uptime || "–";
+  $("cpu").textContent = Math.round(m.cpu);
+  const ring = $("ring");
+  ring.style.strokeDashoffset = 471 * (1 - Math.min(m.cpu,100)/100);
+  ring.style.stroke = color(m.cpu);
+  setBar("memB","memT",m.mem); setBar("diskB","diskT",m.disk);
+  $("services").innerHTML = Object.entries(m.services || {}).map(([n,up]) =>
+    `<span class="pill ${up ? "" : "down"}">${esc(n)} ${up ? "running" : "down"}</span>`).join("");
+  const box = $("logs"), stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+  box.innerHTML = (m.logs || []).map(l => {
+    const lvl = (l.match(/\[(INFO|WARN|ERROR)\]/) || [])[1] || "INFO";
+    return `<div class="${lvl}">${esc(l)}</div>`;
+  }).join("");
+  if (stick) box.scrollTop = box.scrollHeight;
+  hist.cpu.push(m.cpu); hist.mem.push(m.mem);
+  Object.values(hist).forEach(a => a.length > 60 && a.shift());
+  drawSpark();
+}
+
+async function tick(){
+  try{
+    const r = await fetch("/metrics");
+    const m = await r.json();
+    if (!r.ok) throw new Error(m.error || "HTTP " + r.status);
+    render(m);
+    $("err").style.display = "none";
+    $("dot").classList.add("live"); $("status").textContent = "live · " + (m.time || "");
+  }catch(e){
+    $("err").textContent = "Can't reach metrics: " + e.message + ". Retrying…";
+    $("err").style.display = "block";
+    $("dot").classList.remove("live"); $("status").textContent = "offline";
+  }
+}
+tick(); setInterval(tick, 3000);
+</script>
+</body>
+</html>
